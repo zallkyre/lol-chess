@@ -79,7 +79,7 @@ const BOOK: &[&str] = &[
     "Nf3 Nf6",
 ];
 
-const APP_VERSION: &str = "0.5.0";
+const APP_VERSION: &str = "0.6.0";
 
 fn is_newer(remote: &str, local: &str) -> bool {
     let parse = |s: &str| -> (u32, u32, u32) {
@@ -137,22 +137,6 @@ enum BotKind {
     Skill(u8),
 }
 
-struct BotDef {
-    name: &'static str,
-    blurb: &'static str,
-    rating: i32,
-    kind: BotKind,
-}
-
-const BOTS: &[BotDef] = &[
-    BotDef { name: "Hopeless", blurb: "plays the worst move on the board", rating: 400, kind: BotKind::Worst },
-    BotDef { name: "Beginner", blurb: "greedy, blind to everything else", rating: 800, kind: BotKind::Skill(0) },
-    BotDef { name: "Casual", blurb: "sees one move ahead", rating: 1100, kind: BotKind::Skill(5) },
-    BotDef { name: "Club", blurb: "punishes loose pieces", rating: 1500, kind: BotKind::Skill(8) },
-    BotDef { name: "Strong", blurb: "steady tactics", rating: 1900, kind: BotKind::Skill(12) },
-    BotDef { name: "Master", blurb: "rarely misses", rating: 2300, kind: BotKind::Skill(16) },
-    BotDef { name: "Full", blurb: "engine strength", rating: 2700, kind: BotKind::Skill(20) },
-];
 
 struct Speed {
     name: &'static str,
@@ -186,20 +170,32 @@ fn fmt_clock(secs: f64) -> String {
 }
 
 fn bot_for_elo(elo: i32) -> (&'static str, BotKind) {
-    let elo = elo.clamp(400, 2700);
+    let elo = elo.clamp(400, 3500);
     if elo <= 500 {
         return ("Hopeless", BotKind::Worst);
     }
     let skill = (((elo - 600) as f32 / 2100.0) * 20.0).round().clamp(0.0, 20.0) as u8;
     let name = match elo {
-        ..=900 => "Beginner",
-        ..=1200 => "Casual",
-        ..=1550 => "Club",
-        ..=1950 => "Strong",
-        ..=2350 => "Master",
-        _ => "Full",
+        ..=800 => "Beginner",
+        ..=1100 => "Casual",
+        ..=1400 => "Improver",
+        ..=1700 => "Club",
+        ..=2000 => "Strong",
+        ..=2300 => "Expert",
+        ..=2600 => "Master",
+        ..=2900 => "Engine",
+        ..=3200 => "Top engine",
+        _ => "Maximum",
     };
     (name, BotKind::Skill(skill))
+}
+
+fn depth_for_elo(elo: i32) -> u32 {
+    if elo <= 2700 {
+        12
+    } else {
+        12 + (((elo - 2700) / 150).min(6)) as u32
+    }
 }
 
 struct App {
@@ -213,9 +209,10 @@ struct App {
     skill: u8,
     hopeless: bool,
     bot_name: String,
+    bot_key: String,
     bot_rating: i32,
+    bot_depth: u32,
     show_bots: bool,
-    bot_setup: Option<usize>,
     setup_color: u8,
     setup_speed: usize,
     setup_elo: i32,
@@ -266,9 +263,10 @@ impl App {
             skill: 8,
             hopeless: false,
             bot_name: String::new(),
+            bot_key: String::new(),
             bot_rating: 1500,
+            bot_depth: 12,
             show_bots: false,
-            bot_setup: None,
             setup_color: 0,
             setup_speed: 1,
             setup_elo: 1500,
@@ -375,7 +373,8 @@ impl App {
             self.engine.submit(move |id| Req::Worst { id, fen, moves, depth: 8 })
         } else {
             let skill = self.skill;
-            self.engine.submit(move |id| Req::Search { id, fen, moves, depth: 12, skill })
+            let depth = self.bot_depth;
+            self.engine.submit(move |id| Req::Search { id, fen, moves, depth, skill })
         };
         self.pending_bot = Some(id);
     }
@@ -563,7 +562,9 @@ impl App {
 
     fn new_game(&mut self) {
         self.bot_name.clear();
+        self.bot_key.clear();
         self.bot_rating = 1500;
+        self.bot_depth = 12;
         self.clock = None;
         self.scored = false;
         self.last_delta = None;
@@ -655,7 +656,7 @@ impl App {
         self.player_elo = before + k * (score - expected);
         self.elo_games += 1;
         self.last_delta = Some((self.player_elo - before).round() as i32);
-        let rec = self.records.entry(self.bot_name.clone()).or_insert((0, 0, 0));
+        let rec = self.records.entry(self.bot_key.clone()).or_insert((0, 0, 0));
         if score > 0.75 {
             rec.0 += 1;
         } else if score < 0.25 {
@@ -694,7 +695,7 @@ impl App {
     }
 
     fn start_bot_game(&mut self) {
-        let elo = self.setup_elo.clamp(400, 2700);
+        let elo = self.setup_elo.clamp(400, 3500);
         let (name, kind) = bot_for_elo(elo);
         let human = match self.setup_color {
             0 => Color::White,
@@ -713,7 +714,9 @@ impl App {
             }
         };
         self.bot_name = name.to_string();
+        self.bot_key = elo.to_string();
         self.bot_rating = elo;
+        self.bot_depth = depth_for_elo(elo);
         self.hopeless = matches!(kind, BotKind::Worst);
         if let BotKind::Skill(s) = kind {
             self.skill = s;
@@ -1081,94 +1084,59 @@ impl eframe::App for App {
 
         if self.show_bots {
             let mut open = true;
-            egui::Window::new("Bots")
+            let mut start = false;
+            egui::Window::new("Play a bot")
+                .collapsible(false)
+                .resizable(false)
                 .open(&mut open)
-                .default_width(380.0)
                 .show(ctx, |ui| {
                     ui.label(
                         egui::RichText::new(format!("your rating {:.0}", self.player_elo)).strong(),
                     );
                     ui.separator();
-                    for (i, bot) in BOTS.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(bot.name).strong());
-                                let rec = self.records.get(bot.name).copied().unwrap_or((0, 0, 0));
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{} - {} - {}/{}/{}",
-                                        bot.rating, bot.blurb, rec.0, rec.1, rec.2
-                                    ))
-                                    .size(11.0)
-                                    .color(egui::Color32::from_gray(150)),
-                                );
-                            });
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("Play").clicked() {
-                                        self.bot_setup = Some(i);
-                                        self.setup_elo = bot.rating;
-                                    }
-                                },
-                            );
+                    ui.add(
+                        egui::Slider::new(&mut self.setup_elo, 400..=3500)
+                            .step_by(100.0)
+                            .text("opponent elo"),
+                    );
+                    let (aname, akind) = bot_for_elo(self.setup_elo);
+                    let askill = match akind {
+                        BotKind::Worst => "worst move".to_string(),
+                        BotKind::Skill(s) => format!("skill {s}, depth {}", depth_for_elo(self.setup_elo)),
+                    };
+                    let rec = self
+                        .records
+                        .get(&self.setup_elo.to_string())
+                        .copied()
+                        .unwrap_or((0, 0, 0));
+                    ui.label(
+                        egui::RichText::new(format!("{aname} - {askill} - {}/{}/{}", rec.0, rec.1, rec.2))
+                            .size(11.0)
+                            .color(egui::Color32::from_gray(150)),
+                    );
+                    ui.separator();
+                    ui.label("you play");
+                    ui.radio_value(&mut self.setup_color, 0, "white");
+                    ui.radio_value(&mut self.setup_color, 1, "black");
+                    ui.radio_value(&mut self.setup_color, 2, "random");
+                    ui.separator();
+                    ui.label("speed");
+                    let sel = self.setup_speed.min(SPEEDS.len().saturating_sub(1));
+                    egui::ComboBox::from_id_salt("speed")
+                        .selected_text(SPEEDS[sel].name)
+                        .show_ui(ui, |ui| {
+                            for (k, s) in SPEEDS.iter().enumerate() {
+                                ui.selectable_value(&mut self.setup_speed, k, s.name);
+                            }
                         });
-                        ui.separator();
+                    ui.separator();
+                    if ui.button("Start").clicked() {
+                        start = true;
                     }
                 });
-            self.show_bots = open;
-        }
-
-        if let Some(i) = self.bot_setup {
-            let mut open = true;
-            let mut start = false;
-            if let Some(bot) = BOTS.get(i) {
-                egui::Window::new(format!("Play {}", bot.name))
-                    .collapsible(false)
-                    .resizable(false)
-                    .open(&mut open)
-                    .show(ctx, |ui| {
-                        ui.add(
-                            egui::Slider::new(&mut self.setup_elo, 400..=2700)
-                                .step_by(50.0)
-                                .text("opponent elo"),
-                        );
-                        let (aname, akind) = bot_for_elo(self.setup_elo);
-                        let askill = match akind {
-                            BotKind::Worst => "worst move".to_string(),
-                            BotKind::Skill(s) => format!("skill {s}"),
-                        };
-                        ui.label(
-                            egui::RichText::new(format!("{aname} - {askill}"))
-                                .size(11.0)
-                                .color(egui::Color32::from_gray(150)),
-                        );
-                        ui.separator();
-                        ui.label("you play");
-                        ui.radio_value(&mut self.setup_color, 0, "white");
-                        ui.radio_value(&mut self.setup_color, 1, "black");
-                        ui.radio_value(&mut self.setup_color, 2, "random");
-                        ui.separator();
-                        ui.label("speed");
-                        let sel = self.setup_speed.min(SPEEDS.len().saturating_sub(1));
-                        egui::ComboBox::from_id_salt("speed")
-                            .selected_text(SPEEDS[sel].name)
-                            .show_ui(ui, |ui| {
-                                for (k, s) in SPEEDS.iter().enumerate() {
-                                    ui.selectable_value(&mut self.setup_speed, k, s.name);
-                                }
-                            });
-                        ui.separator();
-                        if ui.button("Start").clicked() {
-                            start = true;
-                        }
-                    });
-            }
+            self.show_bots = open && !start;
             if start {
                 self.start_bot_game();
-                self.bot_setup = None;
-            } else if !open {
-                self.bot_setup = None;
             }
         }
 
