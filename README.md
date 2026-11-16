@@ -15,7 +15,8 @@ movement, chess-coach grading.
 - **Movement**: exactly lichess. A *dragged* piece is under the cursor already,
   so it snaps on drop. A *click-click* move slides over 140 ms. Illegal drops
   snap back with no animation.
-- **Engine**: Stockfish over UCI, spawned from `engine/stockfish.exe`.
+- **Engine**: Stockfish over UCI, spawned from `engine/stockfish.exe`, using one
+  thread per core (capped at 8).
 - **Ratings**: win-percent deltas, not pawns. Lenient bands:
   Excellent <=3, Good <=8, Inaccuracy <=14, Mistake <=26, Blunder above.
 - **Tactics**: fork, pin, skewer, discovered attack, double check, back rank,
@@ -23,7 +24,8 @@ movement, chess-coach grading.
 - **Forced**: one legal move - the king is in check and it has to go there.
 - **Coach**: local, rule-based, names the tactic. No chat with the bot.
 - **Hopeless bot**: tick `hopeless bot` in the sidebar and the engine plays the
-  *worst* move it can find (MultiPV sweep at depth 8, lowest score wins).
+  *worst* move it can find: every legal move scored by Stockfish at depth 8 via a
+  MultiPV-50 sweep, lowest score wins. Not random - deliberately worst.
 - **Auto-update check**: on launch the app compares `VERSION` against the repo
   and shows an **Update** button when they differ; the button runs the installer.
 

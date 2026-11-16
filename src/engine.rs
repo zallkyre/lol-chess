@@ -132,7 +132,13 @@ fn take_info(line: &str, a: &mut Analysis) {
     }
 }
 
-fn scan_worst(line: &str, acc: &mut Option<(i32, String)>) {
+#[derive(Default)]
+struct Worst {
+    depth: i32,
+    entries: Vec<(usize, i32, String)>,
+}
+
+fn scan_worst(line: &str, w: &mut Worst) {
     let Some(rest) = line.strip_prefix("info ") else { return };
     if rest.starts_with("string") {
         return;
@@ -141,32 +147,53 @@ fn scan_worst(line: &str, acc: &mut Option<(i32, String)>) {
     if toks.iter().any(|t| *t == "upperbound" || *t == "lowerbound") {
         return;
     }
+    let mut depth = None;
+    let mut mp = 1usize;
     let mut score = None;
+    let mut mv: Option<String> = None;
     let mut i = 0;
-    while i + 2 < toks.len() {
-        if toks[i] == "score" {
-            if let Ok(v) = toks[i + 2].parse::<i32>() {
-                score = Some(match toks[i + 1] {
-                    "mate" => {
-                        if v > 0 { 10000 - v * 10 } else { -10000 - v * 10 }
-                    }
-                    "cp" => v,
-                    _ => return,
-                });
+    while i < toks.len() {
+        match toks[i] {
+            "depth" => {
+                depth = toks.get(i + 1).and_then(|v| v.parse::<i32>().ok());
+                i += 2;
             }
-            break;
+            "multipv" => {
+                mp = toks.get(i + 1).and_then(|v| v.parse::<usize>().ok()).unwrap_or(1);
+                i += 2;
+            }
+            "score" if i + 2 < toks.len() => {
+                if let Ok(v) = toks[i + 2].parse::<i32>() {
+                    score = Some(match toks[i + 1] {
+                        "mate" => {
+                            if v > 0 { 10000 - v * 10 } else { -10000 - v * 10 }
+                        }
+                        "cp" => v,
+                        _ => return,
+                    });
+                }
+                i += 3;
+            }
+            "pv" => {
+                mv = toks.get(i + 1).map(|s| s.to_string());
+                break;
+            }
+            _ => i += 1,
         }
-        i += 1;
     }
-    let Some(sc) = score else { return };
-    let Some(pos) = toks.iter().position(|t| *t == "pv") else { return };
-    let Some(mv) = toks.get(pos + 1) else { return };
-    if mv.len() < 4 {
+    let (Some(d), Some(sc), Some(m)) = (depth, score, mv) else { return };
+    if d > w.depth {
+        w.depth = d;
+        w.entries.clear();
+    }
+    if d != w.depth || m.len() < 4 {
         return;
     }
-    match acc {
-        Some((best, _)) if sc >= *best => {}
-        _ => *acc = Some((sc, mv.to_string())),
+    if let Some(slot) = w.entries.iter_mut().find(|(idx, _, _)| *idx == mp) {
+        slot.1 = sc;
+        slot.2 = m;
+    } else {
+        w.entries.push((mp, sc, m));
     }
 }
 
@@ -210,8 +237,10 @@ impl Uci {
             u.shutdown();
             return None;
         }
-        u.send("setoption name Threads value 1");
-        u.send("setoption name Hash value 64");
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let threads = threads.clamp(1, 8);
+        u.send(&format!("setoption name Threads value {threads}"));
+        u.send("setoption name Hash value 256");
         if u.sync() {
             Some(u)
         } else {
@@ -274,7 +303,7 @@ impl Uci {
         }
 
         let mut a = Analysis::default();
-        let mut worst_acc: Option<(i32, String)> = None;
+        let mut worst = Worst::default();
         let deadline = Instant::now() + Duration::from_millis(2000 + u64::from(depth) * 700);
         let mut stop_sent = false;
         let mut cancelled = false;
@@ -317,20 +346,22 @@ impl Uci {
             match self.rx.recv_timeout(wait) {
                 Ok(line) => {
                     if worst {
-                        scan_worst(&line, &mut worst_acc);
+                        scan_worst(&line, &mut worst);
                     }
                     if let Some(best) = best_move(&line) {
                         if worst {
-                            if let Some((score, mv)) = worst_acc.take() {
-                                if !mv.is_empty() {
+                            match worst
+                                .entries
+                                .iter()
+                                .min_by_key(|(_, s, _)| *s)
+                                .map(|(_, s, m)| (*s, m.clone()))
+                            {
+                                Some((score, mv)) => {
                                     a.best = mv;
                                     a.cp = Some(score);
                                     a.mate = None;
-                                } else {
-                                    a.best = best;
                                 }
-                            } else {
-                                a.best = best;
+                                None => a.best = best,
                             }
                         } else {
                             a.best = best;

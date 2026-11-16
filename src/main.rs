@@ -79,7 +79,7 @@ const BOOK: &[&str] = &[
     "Nf3 Nf6",
 ];
 
-const APP_VERSION: &str = "0.3.0";
+const APP_VERSION: &str = "0.3.1";
 const VERSION_URL: &str = "https://raw.githubusercontent.com/zallkyre/lol-chess/main/VERSION";
 const INSTALL_CMD: &str = "irm https://raw.githubusercontent.com/zallkyre/lol-chess/main/install.ps1 | iex";
 
