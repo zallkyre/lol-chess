@@ -170,9 +170,15 @@ impl App {
 
         let fen_for_grade = before_fen.clone();
         let played = uci.clone();
+        let history: Vec<String> = self
+            .uci_history
+            .get(..self.uci_history.len().saturating_sub(1))
+            .map(|s| s.to_vec())
+            .unwrap_or_default();
         let id = self.engine.submit(move |id| Req::Grade {
             id,
             fen: fen_for_grade,
+            moves: history,
             played,
             depth: 14,
         });
@@ -243,7 +249,7 @@ impl App {
             } else {
                 Rating::Best
             }
-        } else if best_win >= 80.0 && played_win < 60.0 {
+        } else if best_win >= 80.0 && (35.0..60.0).contains(&played_win) {
             Rating::Miss
         } else if delta <= 3.0 && tactics.names.contains(&"sacrifice") && played_win >= 45.0 {
             Rating::Brilliant
@@ -264,9 +270,12 @@ impl App {
         }
 
         self.eval_cp = if mover == Color::White { played_cp } else { -played_cp };
+        while self.eval_history.len() > self.san_list.len() {
+            self.eval_history.pop();
+        }
+        self.eval_history.push(self.eval_cp);
 
-        if self.pos.turn() == self.human || grade::is_over(&self.pos) {
-        } else {
+        if self.pos.turn() != self.human && !grade::is_over(&self.pos) {
             self.request_bot();
         }
     }
@@ -301,6 +310,10 @@ impl App {
         }
         let s = a.score();
         self.eval_cp = if bot_side == Color::White { s } else { -s };
+        while self.eval_history.len() > self.san_list.len() {
+            self.eval_history.pop();
+        }
+        self.eval_history.push(self.eval_cp);
         self.rating = None;
         self.tactics = Tactics::default();
         if grade::is_over(&self.pos) {
@@ -339,6 +352,9 @@ impl App {
         self.board.selected = None;
         self.board.hint = None;
         self.board.anim = None;
+        self.board.drag = None;
+        self.eval_history.truncate(self.san_list.len() + 1);
+        self.eval_cp = *self.eval_history.last().unwrap_or(&20);
         self.rating = None;
         self.tactics = Tactics::default();
         self.badge = None;
@@ -364,6 +380,7 @@ impl App {
         self.badge = None;
         self.coach = "Fresh board. Your move.".into();
         self.eval_cp = 20;
+        self.eval_history = vec![20];
         self.pending_grade = None;
         self.pending_bot = None;
         self.pending_hint = None;
@@ -537,6 +554,11 @@ impl eframe::App for App {
                     };
                     ui.label(egui::RichText::new(status).size(12.0).color(egui::Color32::from_rgb(0x9a, 0x9a, 0x9a)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.pos.turn() != self.human && !self.thinking() && !grade::is_over(&self.pos) {
+                            if ui.button("Retry bot").clicked() {
+                                self.request_bot();
+                            }
+                        }
                         if ui.button("New game").clicked() {
                             self.new_game();
                         }

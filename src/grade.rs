@@ -269,10 +269,9 @@ fn clear_between(board: &Board, a: Square, b: Square) -> bool {
     let (df, dr) = ((bf - af).signum(), (br - ar).signum());
     let (mut f, mut r) = (af + df, ar + dr);
     while (f, r) != (bf, br) {
-        if let Some(s) = sq_at(f, r) {
-            if board.piece_at(s).is_some() {
-                return false;
-            }
+        let Some(s) = sq_at(f, r) else { return false };
+        if board.piece_at(s).is_some() {
+            return false;
         }
         f += df;
         r += dr;

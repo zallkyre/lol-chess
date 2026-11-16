@@ -30,7 +30,7 @@ impl Analysis {
 
 pub enum Req {
     Search { id: u64, fen: String, moves: Vec<String>, depth: u32, skill: u8 },
-    Grade { id: u64, fen: String, played: String, depth: u32 },
+    Grade { id: u64, fen: String, moves: Vec<String>, played: String, depth: u32 },
     NewGame,
 }
 
@@ -302,15 +302,17 @@ impl Uci {
                     Seek::Dead => Res::Dead,
                 }
             }
-            Req::Grade { id, fen, played, depth } => {
-                let best = match self.search(id, latest, &fen, &[], depth, 20, 2) {
+            Req::Grade { id, fen, moves, played, depth } => {
+                let best = match self.search(id, latest, &fen, &moves, depth, 20, 2) {
                     Seek::Found(a) => a,
                     Seek::Cancelled => return Res::Cancelled,
                     Seek::Dead => return Res::Dead,
                 };
                 let played_score = match fen_after(&fen, &played) {
                     Some(after) => {
-                        match self.search(id, latest, &after, &[], depth, 20, 1) {
+                        let mut next = moves;
+                        next.push(played);
+                        match self.search(id, latest, &after, &next, depth, 20, 1) {
                             Seek::Found(r) => Some(-r.score()),
                             Seek::Cancelled => return Res::Cancelled,
                             Seek::Dead => return Res::Dead,

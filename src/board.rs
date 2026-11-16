@@ -112,12 +112,6 @@ fn target_move(pos: &Chess, from: Square, to: Square) -> Option<Move> {
 }
 
 impl BoardState {
-    pub fn center_of(&self, sq: Square) -> Pos2 {
-        Layout { origin: self.origin, cell: self.cell }
-            .rect(sq, self.orientation)
-            .center()
-    }
-
     pub fn start_slide(&mut self, from: Square, to: Square, white: bool, role: Role, now: f64) {
         self.anim = Some(Anim { white, role, from_sq: from, to_sq: to, t0: now, dur: 0.14 });
     }
