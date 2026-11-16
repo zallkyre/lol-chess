@@ -1,5 +1,12 @@
 # LOL Chess
 
+```powershell
+irm https://raw.githubusercontent.com/zallkyre/lol-chess/main/install.ps1 | iex
+```
+
+One line. Installs to `%LOCALAPPDATA%\LolChess`, fetches Stockfish, builds,
+writes a **LOL Chess** shortcut to the Desktop and launches it.
+
 Native Rust desktop chess trainer. Lichess board and pieces, lichess piece
 movement, chess-coach grading.
 
