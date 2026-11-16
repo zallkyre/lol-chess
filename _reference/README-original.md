@@ -1,0 +1,178 @@
+﻿![Chess Coach](assets/banner-full.jpg)
+
+# Chess Coach
+
+A native desktop chess app that grades every move the moment you play it,
+draws what your opponent is threatening, and talks to you like a club player
+instead of a GM.
+
+Python + Tkinter. No browser, no webview, no JavaScript. Stockfish runs as a
+real local process and answers in about 30ms.
+
+Stockfish does the analysis. Ray does the talking. Ray is not a pro, he says so.
+
+
+## What's new in this build
+
+- **Native desktop shell (Qt / PySide6)** — no Tkinter, no webview, no Electron. `desktop/qt_app.py`.
+- **Engine client** — Stockfish in a worker with a serial queue, cancellation, streamed `info depth`, an FEN-keyed transposition cache and an FEN-indexed opening book (`vendor/engine.js` for web/mobile, `Engine` in `app.py` for native).
+- **Premove** — set your next move while Ray thinks; both squares go red, the move fires the instant he replies, dragging the same squares again cancels it.
+- **Ray is local** — no API key, no network. Lines are built from the actual move (piece, squares, capture, check, what was better) and never repeat back to back (`vendor/ray.js`, `Ray` in `app.py`).
+- **Chess.com presentation** — #eeeed2/#769656 board, `!! ! ★ 👍 ✓ 📖 ?! ? ✕ ??` badges pinned to the destination square's top-right corner, figurine move list, glass panels.
+- **Shipping** — `release/ChessCoach.exe` and `release/Chess Coach.apk`.
+
+### Desktop build
+
+```powershell
+pip install PySide6-Essentials pyinstaller
+python -m PyInstaller --noconfirm --onefile --noconsole --name ChessCoach ^
+  --icon assets/icon.ico --add-data "assets;assets" --paths . desktop\qt_app.py
+```
+
+Stockfish is still expected at `%APPDATA%\ChessCoach\engine\stockfish.exe`; if it is missing the app shows an install window with progress instead of failing.
+
+### Phone build
+
+`chess-coach-mobile/` is the Capacitor project; `www/` is the UI that ships in the APK.
+
+## Install
+
+```powershell
+irm https://raw.githubusercontent.com/zallkyre/chess-coach/main/install.ps1 | iex
+```
+
+That one line installs the app (~35 MB) to `%LOCALAPPDATA%\ChessCoach`, then
+fetches Stockfish straight from the official Stockfish release, puts a
+**Chess Coach** shortcut on your desktop, and launches it.
+
+The engine is not bundled: it is a 98 MB NNUE binary, so it comes from
+[official-stockfish/Stockfish](https://github.com/official-stockfish/Stockfish/releases)
+at install time. That keeps the app download at 35 MB instead of 112 MB.
+
+Uninstall: delete `%LOCALAPPDATA%\ChessCoach` and the desktop shortcut. Nothing
+else is touched.
+
+## What it does
+
+- **Opening readout**: names the line you are in and flags a gambit,
+  under the board next to your accuracy
+- **Instant move rating**: Brilliant / Great / Best / Excellent / Good / Book /
+  Inaccuracy / Mistake / Miss / Blunder, the pawns it cost you, and a colored
+  chip. The loss is measured at one root: the engine's score for its best move
+  minus its score for yours, so tempo is never counted as a mistake
+- **Threat arrows**: real legal attack generation, not a guess. Enemy pieces
+  that can take something of yours get a red arrow, worst victim first
+- **Smooth rounded UI**: cards, buttons, chips, board frame and banner are
+  drawn with PIL at 4x and downsampled, so the edges are antialiased
+- **Draw your own arrows**: right-click drag from square to square. They stay
+  put through moves, undo, flips and theme changes. Right-drag the same arrow
+  again to remove it, shift + right-click to clear them all. A knight's arrow
+  bends at the corner instead of cutting across the board
+- **Hint**: first press points at the piece, second press names the move.
+  The search runs for up to 2.5s at full strength, so it is the engine's move,
+  not a guess
+- **Revert**: the button, or click any move in the list to rewind there
+- **Drag or click** to move, legal-move dots, last-move and check highlights
+- **Post-game review, step by step**: an **Analyze game** button lights up when
+  the game ends. It re-analyzes every position deeper than the live pass, then
+  walks the game with ◀ / ▶ (or ← →), showing one position at a time with the
+  badge, the pawns it cost, and a green arrow where the engine would have gone.
+  **Both sides are graded**, so Ray gets called out too, and the counter shows
+  your accuracy next to his. The walkthrough opens the moment you press
+  Analyze and each ply fills in as it is graded, so you never wait for the
+  whole pass. **auto** replays the whole thing, Esc closes it
+- **Background precompute**: every move is graded a second time in an idle
+  background thread, and the engine's best move for the current position is
+  cached. Pressing Analyze then takes about a hundredth of a second, and Hint
+  answers from cache instead of searching
+- **Bot vs bot**: the **BOTS** side button opens a small dialog where you set
+  white's level and black's level, then the app plays both sides and grades
+  every move. No engine search is ever allowed to run past 1.4 seconds, so a
+  hard position shortens the think instead of freezing the board
+- **Side buttons** next to the board: **LOCK** pins the window on top until you
+  press it again, **FEN** copies the position, the theme button cycles board
+  colors, **FULL** maximizes the window
+- **Captured material**, board themes, coordinates, eval bar, all toggleable
+
+## Keys and providers
+
+Keys live in the [`secrets-mcp`](https://github.com/zallkyre/secrets-mcp) vault
+(Windows DPAPI, bound to your user). The app reads them through the vault
+library, so a key is never written to a file, a config, or a transcript.
+
+Add or change one in the app: **key...** next to the chat box. Paste it, hit
+Save. It comes back as a fingerprint (`…M98A`), never as a value.
+
+| provider | default model | key needed |
+|---|---|---|
+| Ray (built-in) | rule-based coach | no, works offline |
+| OpenAI | `gpt-4o-mini` | yes |
+| OpenRouter | `openai/gpt-oss-20b` | yes |
+| Ollama | `llama3.1` | no, local |
+
+The built-in brain is the default. It reads the real position (eval, threats,
+best move, opening, your last grade) and answers without any key or network.
+Any OpenAI-compatible endpoint works.
+
+## How the grading works
+
+Two things make the ratings trustworthy:
+
+1. **Analysis always runs at Skill Level 20.** Stockfish's lowered skill levels
+   deliberately fuzz the score they report, which turns shallow noise into fake
+   mistakes. Weakness belongs in move selection, not in the evaluator.
+**Difficulty is not dice.** Level 0 is greedy to a fault: it takes any capture
+on the board, biggest piece first, and a poisoned one even faster - hand it a
+gambit and it falls in. Otherwise it plays the worst move it can find, every
+time. Level 1 deliberately gives material away (it
+picks from moves that leave a piece hanging); as the level rises the bot picks
+closer and closer to the engine's top move, and 20 always plays the best line.
+Every search is capped in wall-clock time, so a slow position shortens the
+think instead of freezing the game.
+
+2. **A noise floor ( and depth-based searches during play. A 4-pawn swing
+   is a blunder; a 0.15-pawn wobble between two searches is not.
+
+Live grading is depth 14 in roughly 30ms. The post-game review runs depth 18
+over every position, which is where accuracy comes from.
+
+## Stack
+
+- `app.py`: the whole app. Tkinter UI, canvas board, PIL-drawn pieces, grading
+- `engine/stockfish.exe`: native Stockfish, not in git, fetched at install
+- `python-chess`: rules, legal moves, FEN, SAN
+- `secrets_mcp`: DPAPI vault for API keys
+- `index.html` / `proxy.py`: the older browser build, still in the repo
+
+## Dev
+
+```powershell
+python app.py          # needs engine/stockfish.exe
+```
+
+Build the app:
+
+```powershell
+python -m PyInstaller --noconfirm --clean --onefile --noconsole --name ChessCoach `
+  --icon assets/icon.ico --add-data "assets;assets" `
+  --paths ..\secrets-mcp --hidden-import secrets_mcp --hidden-import secrets_mcp.store `
+  app.py
+```
+
+`engine/stockfish.exe` is not in git. Grab
+`stockfish-windows-x86-64-universal.exe` from the official releases, rename it,
+drop it in `engine/`.
+
+## Limitations
+
+- Windows first (the vault uses DPAPI)
+- Ray is a small model with a specific voice. He will confidently say something
+  mildly wrong. Treat him as a friend at the board, not a second engine
+
+## License
+
+MIT for this app. Stockfish is GPLv3 and is used unmodified.
+
+---
+
+**LLM guide** — Browser chess with instant move grading, threat arrows, and a built-in coach · Stack: Python · Entry: `app.py` · Run: `open index.html` · License: MIT-0 - no conditions, resale allowed

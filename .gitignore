@@ -1,0 +1,7 @@
+/target
+/engine
+*.pdb
+*.exe
+*.dll
+.DS_Store
+Thumbs.db
