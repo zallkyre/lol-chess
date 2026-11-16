@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 
 $repo = "zallkyre/lol-chess"
 $zipUrl = "https://github.com/$repo/archive/refs/heads/main.zip"
-$sfUrl = "https://github.com/official-stockfish/Stockfish/releases/latest/download/stockfish-windows-x86-64-avx2.zip"
+$sfFallback = "https://github.com/official-stockfish/Stockfish/releases/latest/download/stockfish-windows-x86-64-universal.zip"
 $dir = Join-Path $env:LOCALAPPDATA "LolChess"
 $tmp = Join-Path $env:TEMP ("lolchess-" + [guid]::NewGuid().ToString("N"))
 
@@ -48,11 +48,24 @@ $engine = Join-Path $dir "engine"
 New-Item -ItemType Directory -Force -Path $engine | Out-Null
 if (-not (Test-Path (Join-Path $engine "stockfish.exe"))) {
     Say "  downloading stockfish" "DarkGray"
+    $sfUrl = $sfFallback
+    try {
+        $rel = Invoke-RestMethod -Headers @{ "User-Agent" = "lol-chess" } `
+            -Uri "https://api.github.com/repos/official-stockfish/Stockfish/releases/latest"
+        $asset = $rel.assets |
+            Where-Object { $_.name -like "stockfish-windows-x86-64*.zip" } |
+            Select-Object -First 1
+        if ($asset) { $sfUrl = $asset.browser_download_url }
+    }
+    catch { }
     $sfZip = Join-Path $tmp "sf.zip"
     Invoke-WebRequest -UseBasicParsing -Uri $sfUrl -OutFile $sfZip
     $sfDir = Join-Path $tmp "sf"
     Expand-Archive -LiteralPath $sfZip -DestinationPath $sfDir -Force
-    $exe = Get-ChildItem -Path $sfDir -Recurse -Filter "stockfish*.exe" | Select-Object -First 1
+    $exes = @(Get-ChildItem -Path $sfDir -Recurse -Filter "stockfish*.exe")
+    $exe = $exes | Where-Object { $_.Name -like "*avx2*" } | Select-Object -First 1
+    if (-not $exe) { $exe = $exes | Where-Object { $_.Name -like "*bmi2*" } | Select-Object -First 1 }
+    if (-not $exe) { $exe = $exes | Select-Object -First 1 }
     if (-not $exe) { throw "stockfish.exe not found in archive" }
     Copy-Item -LiteralPath $exe.FullName -Destination (Join-Path $engine "stockfish.exe") -Force
 } else {
