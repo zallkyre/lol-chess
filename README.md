@@ -26,6 +26,11 @@ movement, chess-coach grading.
 - **Hopeless bot**: tick `hopeless bot` in the sidebar and the engine plays the
   *worst* move it can find: every legal move scored by Stockfish at depth 8 via a
   MultiPV-50 sweep, lowest score wins. Not random - deliberately worst.
+- **Bots**: **Bots** button opens a list of seven opponents (Hopeless 400 to Full
+  2700). **Play** opens a setup window: colour (white / black / random) and speed
+  (bullet, blitz, rapid, classical, no clock), then a real game with an increment
+  clock and Elo that moves like lichess (K=40 under 30 games, then 20). Ratings and
+  W/L/D per bot persist in `profile.ini` next to the exe.
 - **Auto-update check**: on launch the app compares `VERSION` against the repo
   and shows an **Update** button when they differ; the button runs the installer.
 

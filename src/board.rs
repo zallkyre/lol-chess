@@ -11,7 +11,6 @@ pub struct Drag {
 pub struct Anim {
     pub white: bool,
     pub role: Role,
-    
     pub from_sq: Square,
     pub to_sq: Square,
     pub t0: f64,
@@ -34,6 +33,7 @@ pub struct BoardState {
     pub arrows: Vec<(Square, Square)>,
     pub arrow_from: Option<Square>,
     pub show_coords: bool,
+    pub locked: bool,
     pub hover: Option<Square>,
     pub origin: Pos2,
     pub cell: f32,
@@ -51,6 +51,7 @@ impl Default for BoardState {
             arrows: Vec::new(),
             arrow_from: None,
             show_coords: true,
+            locked: false,
             hover: None,
             origin: Pos2::ZERO,
             cell: 64.0,
@@ -141,7 +142,7 @@ impl BoardState {
         });
 
         let mut out: Option<(Move, bool)> = None;
-        let can_move = pos.turn() == human && !is_over(pos);
+        let can_move = pos.turn() == human && !is_over(pos) && !self.locked;
         self.hover = pointer.and_then(|p| lay.square_at(p, self.orientation));
 
         let ours = |sq: Square| board.piece_at(sq).map(|pc| pc.color == human).unwrap_or(false);

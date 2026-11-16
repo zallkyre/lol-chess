@@ -182,12 +182,11 @@ fn scan_worst(line: &str, w: &mut Worst) {
         }
     }
     let (Some(d), Some(sc), Some(m)) = (depth, score, mv) else { return };
+    if d < w.depth || m.len() < 4 {
+        return;
+    }
     if d > w.depth {
         w.depth = d;
-        w.entries.clear();
-    }
-    if d != w.depth || m.len() < 4 {
-        return;
     }
     if let Some(slot) = w.entries.iter_mut().find(|(idx, _, _)| *idx == mp) {
         slot.1 = sc;
@@ -405,17 +404,21 @@ impl Uci {
                     Seek::Cancelled => return Res::Cancelled,
                     Seek::Dead => return Res::Dead,
                 };
-                let played_score = match fen_after(&fen, &played) {
-                    Some(after) => {
-                        let mut next = moves;
-                        next.push(played);
-                        match self.search(id, latest, &after, &next, depth, 20, 1, false) {
-                            Seek::Found(r) => Some(-r.score()),
-                            Seek::Cancelled => return Res::Cancelled,
-                            Seek::Dead => return Res::Dead,
+                let played_score = if played == best.best && (best.cp.is_some() || best.mate.is_some()) {
+                    Some(best.score())
+                } else {
+                    match fen_after(&fen, &played) {
+                        Some(after) => {
+                            let mut next = moves;
+                            next.push(played);
+                            match self.search(id, latest, &after, &next, depth, 20, 1, false) {
+                                Seek::Found(r) => Some(-r.score()),
+                                Seek::Cancelled => return Res::Cancelled,
+                                Seek::Dead => return Res::Dead,
+                            }
                         }
+                        None => None,
                     }
-                    None => None,
                 };
                 Res::Done(Done { id, kind: Kind::Grade { best, played: played_score } })
             }
