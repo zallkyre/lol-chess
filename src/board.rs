@@ -178,9 +178,11 @@ impl BoardState {
         }
         if resp.drag_stopped() {
             if let (Some(d), Some(p)) = (self.drag.take(), pointer) {
-                if let Some(to) = lay.square_at(p, self.orientation) {
-                    if let Some(mv) = target_move(pos, d.from, to) {
-                        out = Some((mv, false));
+                if can_move {
+                    if let Some(to) = lay.square_at(p, self.orientation) {
+                        if let Some(mv) = target_move(pos, d.from, to) {
+                            out = Some((mv, false));
+                        }
                     }
                 }
                 self.selected = None;

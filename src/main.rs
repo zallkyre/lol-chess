@@ -79,7 +79,7 @@ const BOOK: &[&str] = &[
     "Nf3 Nf6",
 ];
 
-const APP_VERSION: &str = "0.6.0";
+const APP_VERSION: &str = "0.7.0";
 
 fn is_newer(remote: &str, local: &str) -> bool {
     let parse = |s: &str| -> (u32, u32, u32) {
@@ -157,6 +157,7 @@ struct Clock {
     white: f64,
     black: f64,
     inc: f64,
+    last_tick: f64,
 }
 
 fn fmt_clock(secs: f64) -> String {
@@ -336,6 +337,18 @@ impl App {
         self.uci_history.push(uci.clone());
         self.rebuild_pairs();
 
+
+        if self.scored {
+            return;
+        }
+        if grade::is_over(&self.pos) {
+            self.coach = if self.pos.is_checkmate() {
+                "Checkmate. That one is yours.".to_string()
+            } else {
+                "Drawn.".to_string()
+            };
+            return;
+        }
         let fen_for_grade = before_fen.clone();
         let played = uci.clone();
         let history: Vec<String> = self
@@ -501,6 +514,10 @@ impl App {
                 }
             }
         }
+        if !self.scored && grade::is_over(&self.pos) {
+            self.coach = "Game over. Hit New game when you want another.".to_string();
+        }
+
         let s = a.score();
         self.eval_cp = if bot_side == Color::White { s } else { -s };
         while self.eval_history.len() > self.san_list.len() {
@@ -509,9 +526,6 @@ impl App {
         self.eval_history.push(self.eval_cp);
         self.rating = None;
         self.tactics = Tactics::default();
-        if grade::is_over(&self.pos) {
-            self.coach = "Game over. Hit New game when you want another.".into();
-        }
     }
 
     fn on_hint(&mut self, a: Analysis) {
@@ -560,7 +574,7 @@ impl App {
         }
     }
 
-    fn new_game(&mut self) {
+    fn clear_rated(&mut self) {
         self.bot_name.clear();
         self.bot_key.clear();
         self.bot_rating = 1500;
@@ -568,6 +582,11 @@ impl App {
         self.clock = None;
         self.scored = false;
         self.last_delta = None;
+        self.board.locked = false;
+    }
+
+    fn new_game(&mut self) {
+        self.clear_rated();
         self.new_game_as(self.human);
     }
 
@@ -622,7 +641,14 @@ impl App {
             let Some((k, v)) = line.split_once('=') else { continue };
             let (k, v) = (k.trim(), v.trim());
             match k {
-                "elo" => self.player_elo = v.parse().unwrap_or(1500.0),
+                "elo" => {
+                    self.player_elo = v
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|x| x.is_finite())
+                        .unwrap_or(1500.0)
+                        .clamp(100.0, 4000.0);
+                }
                 "games" => self.elo_games = v.parse().unwrap_or(0),
                 _ => {
                     if let Some(name) = k.strip_prefix("rec.") {
@@ -723,7 +749,7 @@ impl App {
         }
         let speed = &SPEEDS[self.setup_speed.min(SPEEDS.len().saturating_sub(1))];
         self.clock = if speed.base > 0.0 {
-            Some(Clock { white: speed.base, black: speed.base, inc: speed.inc })
+            Some(Clock { white: speed.base, black: speed.base, inc: speed.inc, last_tick: now() })
         } else {
             None
         };
@@ -731,7 +757,11 @@ impl App {
         self.last_delta = None;
         self.new_game_as(human);
         self.board.locked = false;
-        self.coach = format!("{} ({}) - your move.", name, elo);
+        self.coach = if human == Color::White {
+            format!("{name} ({elo}) - your move.")
+        } else {
+            format!("{name} ({elo}) - bot has white.")
+        };
     }
 
     fn cycle_theme(&mut self) {
@@ -828,9 +858,12 @@ impl eframe::App for App {
         }
 
         let mut timeout: Option<bool> = None;
+        let t_now = now();
+        let grading = self.pending_grade.is_some();
         if let Some(c) = &mut self.clock {
-            if !self.scored && !grade::is_over(&self.pos) {
-                let dt = ctx.input(|i| i.stable_dt).min(0.25) as f64;
+            let dt = (t_now - c.last_tick).max(0.0);
+            c.last_tick = t_now;
+            if !self.scored && !grading && !grade::is_over(&self.pos) {
                 if self.pos.turn() == Color::White {
                     c.white -= dt;
                 } else {
@@ -842,7 +875,7 @@ impl eframe::App for App {
                     timeout = Some(self.human == Color::Black);
                 }
             }
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
         if let Some(human_lost) = timeout {
             self.score_game(if human_lost { 0.0 } else { 1.0 });
@@ -852,6 +885,7 @@ impl eframe::App for App {
                 "Bot flagged. You win on time.".to_string()
             };
         }
+
         let finished = self.engine.drain();
         for done in finished {
             if Some(done.id) == self.pending_grade {
@@ -911,7 +945,7 @@ impl eframe::App for App {
                     ui.label(egui::RichText::new("LOL").strong().size(18.0).color(egui::Color32::from_rgb(0x81, 0xb6, 0x4c)));
                     ui.label(egui::RichText::new("CHESS").strong().size(18.0).color(egui::Color32::from_rgb(0xd6, 0xd6, 0xd6)));
                     ui.add_space(12.0);
-                    let status = if grade::is_over(&self.pos) {
+                    let status = if self.scored || grade::is_over(&self.pos) {
                         "game over"
                     } else if self.thinking() {
                         "thinking..."
@@ -944,7 +978,7 @@ impl eframe::App for App {
                             self.score_game(0.0);
                             self.coach = "Resigned.".to_string();
                         }
-                        if self.pos.turn() != self.human && !self.thinking() && !grade::is_over(&self.pos) {
+                        if !self.scored && self.pos.turn() != self.human && !self.thinking() && !grade::is_over(&self.pos) {
                             if ui.button("Retry bot").clicked() {
                                 self.request_bot();
                             }
@@ -955,6 +989,7 @@ impl eframe::App for App {
                         let other = if self.human == Color::White { "Play black" } else { "Play white" };
                         if ui.button(other).clicked() {
                             let human = if self.human == Color::White { Color::Black } else { Color::White };
+                            self.clear_rated();
                             self.new_game_as(human);
                         }
                         if ui.add_enabled(self.bot_name.is_empty(), egui::Button::new("Undo")).clicked() {
@@ -983,8 +1018,12 @@ impl eframe::App for App {
             )
             .show(ctx, |ui| {
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    ui.checkbox(&mut self.hopeless, "hopeless bot");
-                    ui.add_enabled(!self.hopeless, egui::Slider::new(&mut self.skill, 0..=20).text("strength"));
+                    let free_play = self.bot_name.is_empty() || self.scored;
+                    ui.add_enabled(free_play, egui::Checkbox::new(&mut self.hopeless, "hopeless bot"));
+                    ui.add_enabled(
+                        free_play && !self.hopeless,
+                        egui::Slider::new(&mut self.skill, 0..=20).text("strength"),
+                    );
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(format!("elo {:.0}", self.player_elo))
@@ -1196,7 +1235,7 @@ impl eframe::App for App {
                     );
 
                     if let Some((mv, animate)) = click {
-                        if self.pos.turn() == self.human {
+                        if self.pos.turn() == self.human && !self.board.locked && !self.scored {
                             self.apply(mv, animate);
                         }
                     }

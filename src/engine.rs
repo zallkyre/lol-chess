@@ -188,9 +188,9 @@ fn scan_worst(line: &str, w: &mut Worst) {
     if d > w.depth {
         w.depth = d;
     }
-    if let Some(slot) = w.entries.iter_mut().find(|(idx, _, _)| *idx == mp) {
+    if let Some(slot) = w.entries.iter_mut().find(|(_, _, mv)| *mv == m) {
+        slot.0 = mp;
         slot.1 = sc;
-        slot.2 = m;
     } else {
         w.entries.push((mp, sc, m));
     }
