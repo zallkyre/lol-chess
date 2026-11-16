@@ -22,6 +22,10 @@ movement, chess-coach grading.
   removing the defender, sacrifice, promotion, checkmate. Named on screen.
 - **Forced**: one legal move - the king is in check and it has to go there.
 - **Coach**: local, rule-based, names the tactic. No chat with the bot.
+- **Hopeless bot**: tick `hopeless bot` in the sidebar and the engine plays the
+  *worst* move it can find (MultiPV sweep at depth 8, lowest score wins).
+- **Auto-update check**: on launch the app compares `VERSION` against the repo
+  and shows an **Update** button when they differ; the button runs the installer.
 
 ## Run
 

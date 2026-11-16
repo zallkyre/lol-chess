@@ -79,6 +79,41 @@ const BOOK: &[&str] = &[
     "Nf3 Nf6",
 ];
 
+const APP_VERSION: &str = "0.3.0";
+const VERSION_URL: &str = "https://raw.githubusercontent.com/zallkyre/lol-chess/main/VERSION";
+const INSTALL_CMD: &str = "irm https://raw.githubusercontent.com/zallkyre/lol-chess/main/install.ps1 | iex";
+
+fn spawn_update_check() -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        #[cfg(windows)]
+        let out = {
+            use std::os::windows::process::CommandExt;
+            std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    &format!("(Invoke-RestMethod -UseBasicParsing '{VERSION_URL}')"),
+                ])
+                .creation_flags(0x08000000)
+                .output()
+        };
+        #[cfg(not(windows))]
+        let out = std::process::Command::new("sh")
+            .args(["-c", &format!("curl -fsSL '{VERSION_URL}'")])
+            .output();
+        if let Ok(o) = out {
+            let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !v.is_empty() {
+                let _ = tx.send(v);
+            }
+        }
+    });
+    rx
+}
+
 struct App {
     pos: Chess,
     human: Color,
@@ -88,6 +123,9 @@ struct App {
     theme: usize,
     set: usize,
     skill: u8,
+    hopeless: bool,
+    update: Option<String>,
+    update_rx: Option<std::sync::mpsc::Receiver<String>>,
 
     san_list: Vec<String>,
     move_pairs: Vec<(String, String)>,
@@ -124,6 +162,9 @@ impl App {
             theme: 0,
             set: 0,
             skill: 8,
+            hopeless: false,
+            update: None,
+            update_rx: Some(spawn_update_check()),
             san_list: Vec::new(),
             move_pairs: Vec::new(),
             coach: "Your move. I'm watching.".to_string(),
@@ -200,9 +241,13 @@ impl App {
 
     fn request_bot(&mut self) {
         let fen = grade::to_fen(&self.pos);
-        let skill = self.skill;
         let moves = self.uci_history.clone();
-        let id = self.engine.submit(move |id| Req::Search { id, fen, moves, depth: 12, skill });
+        let id = if self.hopeless {
+            self.engine.submit(move |id| Req::Worst { id, fen, moves, depth: 8 })
+        } else {
+            let skill = self.skill;
+            self.engine.submit(move |id| Req::Search { id, fen, moves, depth: 12, skill })
+        };
         self.pending_bot = Some(id);
     }
 
@@ -484,6 +529,19 @@ fn coach_line(rating: Rating, t: &Tactics, san: String, delta: f64) -> String {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(rx) = self.update_rx.take() {
+            match rx.try_recv() {
+                Ok(v) => {
+                    let v = v.trim().to_string();
+                    if !v.is_empty() && v != APP_VERSION {
+                        self.update = Some(v);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => self.update_rx = Some(rx),
+                Err(_) => {}
+            }
+        }
+
         let finished = self.engine.drain();
         for done in finished {
             if Some(done.id) == self.pending_grade {
@@ -554,6 +612,20 @@ impl eframe::App for App {
                     };
                     ui.label(egui::RichText::new(status).size(12.0).color(egui::Color32::from_rgb(0x9a, 0x9a, 0x9a)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(v) = self.update.clone() {
+                            if ui.button(format!("Update {v}")).clicked() {
+                                let _ = std::process::Command::new("powershell")
+                                    .args([
+                                        "-NoProfile",
+                                        "-ExecutionPolicy",
+                                        "Bypass",
+                                        "-Command",
+                                        INSTALL_CMD,
+                                    ])
+                                    .spawn();
+                                self.coach = "Updating in a new window...".to_string();
+                            }
+                        }
                         if self.pos.turn() != self.human && !self.thinking() && !grade::is_over(&self.pos) {
                             if ui.button("Retry bot").clicked() {
                                 self.request_bot();
@@ -593,6 +665,7 @@ impl eframe::App for App {
             )
             .show(ctx, |ui| {
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.checkbox(&mut self.hopeless, "hopeless bot");
                     ui.add(egui::Slider::new(&mut self.skill, 0..=20).text("strength"));
                     ui.horizontal(|ui| {
                         if ui.button("Board").clicked() {

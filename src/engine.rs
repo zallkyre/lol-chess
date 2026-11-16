@@ -30,6 +30,7 @@ impl Analysis {
 
 pub enum Req {
     Search { id: u64, fen: String, moves: Vec<String>, depth: u32, skill: u8 },
+    Worst { id: u64, fen: String, moves: Vec<String>, depth: u32 },
     Grade { id: u64, fen: String, moves: Vec<String>, played: String, depth: u32 },
     NewGame,
 }
@@ -38,6 +39,7 @@ impl Req {
     fn id(&self) -> u64 {
         match self {
             Req::Search { id, .. } => *id,
+            Req::Worst { id, .. } => *id,
             Req::Grade { id, .. } => *id,
             Req::NewGame => 0,
         }
@@ -130,6 +132,44 @@ fn take_info(line: &str, a: &mut Analysis) {
     }
 }
 
+fn scan_worst(line: &str, acc: &mut Option<(i32, String)>) {
+    let Some(rest) = line.strip_prefix("info ") else { return };
+    if rest.starts_with("string") {
+        return;
+    }
+    let toks: Vec<&str> = rest.split_whitespace().collect();
+    if toks.iter().any(|t| *t == "upperbound" || *t == "lowerbound") {
+        return;
+    }
+    let mut score = None;
+    let mut i = 0;
+    while i + 2 < toks.len() {
+        if toks[i] == "score" {
+            if let Ok(v) = toks[i + 2].parse::<i32>() {
+                score = Some(match toks[i + 1] {
+                    "mate" => {
+                        if v > 0 { 10000 - v * 10 } else { -10000 - v * 10 }
+                    }
+                    "cp" => v,
+                    _ => return,
+                });
+            }
+            break;
+        }
+        i += 1;
+    }
+    let Some(sc) = score else { return };
+    let Some(pos) = toks.iter().position(|t| *t == "pv") else { return };
+    let Some(mv) = toks.get(pos + 1) else { return };
+    if mv.len() < 4 {
+        return;
+    }
+    match acc {
+        Some((best, _)) if sc >= *best => {}
+        _ => *acc = Some((sc, mv.to_string())),
+    }
+}
+
 impl Uci {
     fn open(path: &std::path::Path) -> Option<Self> {
         if !path.exists() {
@@ -216,6 +256,7 @@ impl Uci {
         depth: u32,
         skill: u8,
         multipv: u8,
+        worst: bool,
     ) -> Seek {
         if !self.send(&format!("setoption name MultiPV value {multipv}"))
             || !self.send(&format!("setoption name Skill Level value {skill}"))
@@ -233,6 +274,7 @@ impl Uci {
         }
 
         let mut a = Analysis::default();
+        let mut worst_acc: Option<(i32, String)> = None;
         let deadline = Instant::now() + Duration::from_millis(2000 + u64::from(depth) * 700);
         let mut stop_sent = false;
         let mut cancelled = false;
@@ -274,8 +316,25 @@ impl Uci {
 
             match self.rx.recv_timeout(wait) {
                 Ok(line) => {
+                    if worst {
+                        scan_worst(&line, &mut worst_acc);
+                    }
                     if let Some(best) = best_move(&line) {
-                        a.best = best;
+                        if worst {
+                            if let Some((score, mv)) = worst_acc.take() {
+                                if !mv.is_empty() {
+                                    a.best = mv;
+                                    a.cp = Some(score);
+                                    a.mate = None;
+                                } else {
+                                    a.best = best;
+                                }
+                            } else {
+                                a.best = best;
+                            }
+                        } else {
+                            a.best = best;
+                        }
                         return if cancelled { Seek::Cancelled } else { Seek::Found(a) };
                     }
                     take_info(&line, &mut a);
@@ -296,14 +355,21 @@ impl Uci {
                 }
             }
             Req::Search { id, fen, moves, depth, skill } => {
-                match self.search(id, latest, &fen, &moves, depth, skill, 1) {
+                match self.search(id, latest, &fen, &moves, depth, skill, 1, false) {
+                    Seek::Found(a) => Res::Done(Done { id, kind: Kind::Search(a) }),
+                    Seek::Cancelled => Res::Cancelled,
+                    Seek::Dead => Res::Dead,
+                }
+            }
+            Req::Worst { id, fen, moves, depth } => {
+                match self.search(id, latest, &fen, &moves, depth, 20, 50, true) {
                     Seek::Found(a) => Res::Done(Done { id, kind: Kind::Search(a) }),
                     Seek::Cancelled => Res::Cancelled,
                     Seek::Dead => Res::Dead,
                 }
             }
             Req::Grade { id, fen, moves, played, depth } => {
-                let best = match self.search(id, latest, &fen, &moves, depth, 20, 2) {
+                let best = match self.search(id, latest, &fen, &moves, depth, 20, 2, false) {
                     Seek::Found(a) => a,
                     Seek::Cancelled => return Res::Cancelled,
                     Seek::Dead => return Res::Dead,
@@ -312,7 +378,7 @@ impl Uci {
                     Some(after) => {
                         let mut next = moves;
                         next.push(played);
-                        match self.search(id, latest, &after, &next, depth, 20, 1) {
+                        match self.search(id, latest, &after, &next, depth, 20, 1, false) {
                             Seek::Found(r) => Some(-r.score()),
                             Seek::Cancelled => return Res::Cancelled,
                             Seek::Dead => return Res::Dead,
