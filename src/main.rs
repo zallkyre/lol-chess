@@ -79,7 +79,7 @@ const BOOK: &[&str] = &[
     "Nf3 Nf6",
 ];
 
-const APP_VERSION: &str = "0.4.0";
+const APP_VERSION: &str = "0.5.0";
 
 fn is_newer(remote: &str, local: &str) -> bool {
     let parse = |s: &str| -> (u32, u32, u32) {
@@ -177,11 +177,29 @@ struct Clock {
 
 fn fmt_clock(secs: f64) -> String {
     let s = secs.max(0.0);
-    if s >= 60.0 {
-        format!("{}:{:02}", (s / 60.0).floor() as i64, (s % 60.0) as i64)
+    if s >= 59.95 {
+        let whole = s.ceil() as i64;
+        format!("{}:{:02}", whole / 60, whole % 60)
     } else {
         format!("{:.1}", s)
     }
+}
+
+fn bot_for_elo(elo: i32) -> (&'static str, BotKind) {
+    let elo = elo.clamp(400, 2700);
+    if elo <= 500 {
+        return ("Hopeless", BotKind::Worst);
+    }
+    let skill = (((elo - 600) as f32 / 2100.0) * 20.0).round().clamp(0.0, 20.0) as u8;
+    let name = match elo {
+        ..=900 => "Beginner",
+        ..=1200 => "Casual",
+        ..=1550 => "Club",
+        ..=1950 => "Strong",
+        ..=2350 => "Master",
+        _ => "Full",
+    };
+    (name, BotKind::Skill(skill))
 }
 
 struct App {
@@ -200,6 +218,7 @@ struct App {
     bot_setup: Option<usize>,
     setup_color: u8,
     setup_speed: usize,
+    setup_elo: i32,
     player_elo: f64,
     elo_games: u32,
     records: std::collections::HashMap<String, (u32, u32, u32)>,
@@ -252,6 +271,7 @@ impl App {
             bot_setup: None,
             setup_color: 0,
             setup_speed: 1,
+            setup_elo: 1500,
             player_elo: 1500.0,
             elo_games: 0,
             records: std::collections::HashMap::new(),
@@ -361,6 +381,12 @@ impl App {
     }
 
     fn on_grade(&mut self, best: Analysis, played: Option<i32>) {
+        if self.scored {
+            self.pending_grade = None;
+            self.pending_fen = None;
+            self.pending_uci = None;
+            return;
+        }
         self.pending_grade = None;
         let Some(fen) = self.pending_fen.take() else {
             return;
@@ -436,6 +462,9 @@ impl App {
 
     fn on_bot(&mut self, a: Analysis) {
         self.pending_bot = None;
+        if self.scored {
+            return;
+        }
         if a.best.is_empty() {
             return;
         }
@@ -456,17 +485,17 @@ impl App {
                     self.board.last = Some((from, to));
                     self.badge = None;
                     self.pos = next;
-        if let Some(c) = &mut self.clock {
-            if !self.scored {
-                let mover = !self.pos.turn();
-                if mover == Color::White {
-                    c.white += c.inc;
-                } else {
-                    c.black += c.inc;
-                }
-            }
-        }
-        self.check_end();
+                    if let Some(c) = &mut self.clock {
+                        if !self.scored {
+                            let mover = !self.pos.turn();
+                            if mover == Color::White {
+                                c.white += c.inc;
+                            } else {
+                                c.black += c.inc;
+                            }
+                        }
+                    }
+                    self.check_end();
                     self.uci_history.push(grade::uci_std(mv));
                     self.san_list.push(san);
                     self.rebuild_pairs();
@@ -495,6 +524,9 @@ impl App {
     }
 
     fn undo(&mut self) {
+        if !self.bot_name.is_empty() {
+            return;
+        }
         self.engine.cancel();
         if self.san_list.is_empty() {
             return;
@@ -561,6 +593,9 @@ impl App {
     }
 
     fn hint(&mut self) {
+        if !self.bot_name.is_empty() {
+            return;
+        }
         if self.pos.turn() != self.human {
             return;
         }
@@ -628,6 +663,10 @@ impl App {
         } else {
             rec.2 += 1;
         }
+        self.engine.cancel();
+        self.pending_grade = None;
+        self.pending_bot = None;
+        self.pending_hint = None;
         self.clock = None;
         self.board.locked = true;
         self.save_profile();
@@ -654,30 +693,29 @@ impl App {
         };
     }
 
-    fn start_bot_game(&mut self, i: usize) {
-        if i >= BOTS.len() {
-            return;
-        }
-        let bot = &BOTS[i];
+    fn start_bot_game(&mut self) {
+        let elo = self.setup_elo.clamp(400, 2700);
+        let (name, kind) = bot_for_elo(elo);
         let human = match self.setup_color {
             0 => Color::White,
             1 => Color::Black,
             _ => {
-                let nanos = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.subsec_nanos())
-                    .unwrap_or(0);
-                if nanos % 2 == 0 {
+                use std::hash::{BuildHasher, Hasher};
+                let bit = std::collections::hash_map::RandomState::new()
+                    .build_hasher()
+                    .finish()
+                    & 1;
+                if bit == 0 {
                     Color::White
                 } else {
                     Color::Black
                 }
             }
         };
-        self.bot_name = bot.name.to_string();
-        self.bot_rating = bot.rating;
-        self.hopeless = matches!(bot.kind, BotKind::Worst);
-        if let BotKind::Skill(s) = bot.kind {
+        self.bot_name = name.to_string();
+        self.bot_rating = elo;
+        self.hopeless = matches!(kind, BotKind::Worst);
+        if let BotKind::Skill(s) = kind {
             self.skill = s;
         }
         let speed = &SPEEDS[self.setup_speed.min(SPEEDS.len().saturating_sub(1))];
@@ -690,7 +728,7 @@ impl App {
         self.last_delta = None;
         self.new_game_as(human);
         self.board.locked = false;
-        self.coach = format!("{} ({}) - your move.", bot.name, bot.rating);
+        self.coach = format!("{} ({}) - your move.", name, elo);
     }
 
     fn cycle_theme(&mut self) {
@@ -916,7 +954,7 @@ impl eframe::App for App {
                             let human = if self.human == Color::White { Color::Black } else { Color::White };
                             self.new_game_as(human);
                         }
-                        if ui.button("Undo").clicked() {
+                        if ui.add_enabled(self.bot_name.is_empty(), egui::Button::new("Undo")).clicked() {
                             self.undo();
                         }
                         if ui.button("Flip").clicked() {
@@ -926,7 +964,7 @@ impl eframe::App for App {
                                 Color::White
                             };
                         }
-                        if ui.button("Hint").clicked() {
+                        if ui.add_enabled(self.bot_name.is_empty(), egui::Button::new("Hint")).clicked() {
                             self.hint();
                         }
                     });
@@ -1070,6 +1108,7 @@ impl eframe::App for App {
                                 |ui| {
                                     if ui.button("Play").clicked() {
                                         self.bot_setup = Some(i);
+                                        self.setup_elo = bot.rating;
                                     }
                                 },
                             );
@@ -1089,7 +1128,21 @@ impl eframe::App for App {
                     .resizable(false)
                     .open(&mut open)
                     .show(ctx, |ui| {
-                        ui.label(egui::RichText::new(format!("rated {}", bot.rating)).color(egui::Color32::from_gray(160)));
+                        ui.add(
+                            egui::Slider::new(&mut self.setup_elo, 400..=2700)
+                                .step_by(50.0)
+                                .text("opponent elo"),
+                        );
+                        let (aname, akind) = bot_for_elo(self.setup_elo);
+                        let askill = match akind {
+                            BotKind::Worst => "worst move".to_string(),
+                            BotKind::Skill(s) => format!("skill {s}"),
+                        };
+                        ui.label(
+                            egui::RichText::new(format!("{aname} - {askill}"))
+                                .size(11.0)
+                                .color(egui::Color32::from_gray(150)),
+                        );
                         ui.separator();
                         ui.label("you play");
                         ui.radio_value(&mut self.setup_color, 0, "white");
@@ -1112,7 +1165,7 @@ impl eframe::App for App {
                     });
             }
             if start {
-                self.start_bot_game(i);
+                self.start_bot_game();
                 self.bot_setup = None;
             } else if !open {
                 self.bot_setup = None;
